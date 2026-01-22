@@ -4,9 +4,9 @@ A Spring Boot application demonstrating dynamic variable replacement in DOCX fil
 
 ## Features
 
-- Replace variables in DOCX files (format: `${variableName}`)
-- Convert DOCX to PDF
-- Combined operation: replace variables and convert to PDF in one step
+- Automatically replaces `${testVariable}` with "I am replaced" in DOCX files
+- Converts the processed DOCX to PDF
+- Single endpoint for streamlined processing
 
 ## Prerequisites
 
@@ -27,57 +27,27 @@ A Spring Boot application demonstrating dynamic variable replacement in DOCX fil
 
    The application will start on `http://localhost:8080`
 
-## API Endpoints
+## API Endpoint
 
-### 1. Health Check
-```bash
-GET http://localhost:8080/api/documents/health
-```
-
-### 2. Replace Variables in DOCX
-Replaces variables in a DOCX file and returns the modified DOCX.
+### Process DOCX Document
+Replaces `${testVariable}` with "I am replaced" in the uploaded DOCX file and returns a PDF.
 
 ```bash
-curl -X POST http://localhost:8080/api/documents/replace \
+curl -X POST http://localhost:8080/api/documents/process \
   -F "file=@template.docx" \
-  -F "name=John Doe" \
-  -F "date=2026-01-21" \
-  -F "company=Acme Corp" \
-  -o output.docx
-```
-
-### 3. Convert DOCX to PDF
-Converts a DOCX file to PDF.
-
-```bash
-curl -X POST http://localhost:8080/api/documents/convert-to-pdf \
-  -F "file=@document.docx" \
-  -o output.pdf
-```
-
-### 4. Replace Variables and Convert to PDF
-Replaces variables and converts to PDF in one operation.
-
-```bash
-curl -X POST http://localhost:8080/api/documents/replace-and-convert \
-  -F "file=@template.docx" \
-  -F "name=John Doe" \
-  -F "date=2026-01-21" \
-  -F "company=Acme Corp" \
   -o output.pdf
 ```
 
 ## Creating a Template DOCX
 
-Create a DOCX file with variables in the format `${variableName}`. For example:
+Create a DOCX file with the variable `${testVariable}`. For example:
 
 ```
-Dear ${name},
+This is a test document.
 
-This letter is to confirm your employment with ${company} as of ${date}.
+The test variable is: ${testVariable}
 
-Best regards,
-HR Department
+This will be replaced automatically.
 ```
 
 A sample template is provided in `src/main/resources/templates/sample_template.docx`.
@@ -106,15 +76,16 @@ signature-docx-poc/
 ## Dependencies
 
 - Spring Boot 3.2.1
-- docx4j 11.4.9
+- docx4j 11.5.9
 - Apache FOP 2.8
 - Lombok
 
 ## Notes
 
-- Variables in DOCX templates must be in the format: `${variableName}`
+- The variable `${testVariable}` is automatically replaced with "I am replaced"
 - Maximum file upload size: 10MB
 - Supported input format: .docx (Microsoft Word 2007+)
+- Output format: PDF
 - PDF output uses Apache FOP for rendering
 
 ## Troubleshooting

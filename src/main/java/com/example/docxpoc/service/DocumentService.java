@@ -1,14 +1,19 @@
 package com.example.docxpoc.service;
 
-import lombok.extern.slf4j.Slf4j;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.util.Map;
+
 import org.docx4j.Docx4J;
-import org.docx4j.convert.out.FOSettings;
+import org.docx4j.fonts.BestMatchingMapper;
+import org.docx4j.fonts.Mapper;
+import org.docx4j.model.datastorage.migration.VariablePrepare;
 import org.docx4j.openpackaging.packages.WordprocessingMLPackage;
 import org.docx4j.openpackaging.parts.WordprocessingML.MainDocumentPart;
 import org.springframework.stereotype.Service;
 
-import java.io.*;
-import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
@@ -17,6 +22,8 @@ public class DocumentService {
     /**
      * Replace variables in a DOCX file with provided values
      * Variables in the DOCX should be in the format: ${variableName}
+     * 
+     * Uses docx4j's built-in VariablePrepare and variableReplace methods
      *
      * @param inputStream Input DOCX file stream
      * @param variables Map of variable names to replacement values
@@ -30,25 +37,18 @@ public class DocumentService {
         WordprocessingMLPackage wordMLPackage = WordprocessingMLPackage.load(inputStream);
         MainDocumentPart documentPart = wordMLPackage.getMainDocumentPart();
         
-        // Get the document as XML string
-        String documentXml = documentPart.getXML();
-        log.debug("Original document XML length: {}", documentXml.length());
+        // Prepare the document for variable replacement
+        // This joins up runs that may have been split, which is essential for variable replacement to work
+        VariablePrepare.prepare(wordMLPackage);
+        log.debug("Document prepared for variable replacement");
         
-        // Replace each variable
-        for (Map.Entry<String, String> entry : variables.entrySet()) {
-            String placeholder = "${" + entry.getKey() + "}";
-            String value = entry.getValue();
-            documentXml = documentXml.replace(placeholder, value);
-            log.debug("Replaced {} with {}", placeholder, value);
-        }
-        
-        // Set the modified XML back to the document
-        documentPart.setContents(documentXml);
+        // Use docx4j's built-in variableReplace method
+        documentPart.variableReplace(variables);
+        log.info("Variable replacement completed successfully");
         
         // Save to ByteArrayOutputStream
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
         wordMLPackage.save(outputStream);
-        log.info("Variable replacement completed successfully");
         
         return outputStream;
     }
@@ -66,19 +66,32 @@ public class DocumentService {
         // Load the DOCX file
         WordprocessingMLPackage wordMLPackage = WordprocessingMLPackage.load(docxInputStream);
         
-        // Configure PDF output settings
-        FOSettings foSettings = Docx4J.createFOSettings();
-        foSettings.setWmlPackage(wordMLPackage);
+        // Remove table borders to prevent unwanted borders in PDF
+        // removeTableBorders(wordMLPackage);
+        
+        // Set up font mapper for PDF conversion
+        Mapper fontMapper = new BestMatchingMapper();
+        wordMLPackage.setFontMapper(fontMapper);
         
         // Create output stream for PDF
         ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream();
         
-        // Convert to PDF
-        Docx4J.toFO(foSettings, pdfOutputStream, Docx4J.FLAG_EXPORT_PREFER_XSL);
+        try {
+            // Convert to PDF using Docx4J.toPDF
+            Docx4J.toPDF(wordMLPackage, pdfOutputStream);
+            
+            log.info("DOCX to PDF conversion completed successfully");
+        } catch (Exception e) {
+            log.error("PDF conversion failed: {}", e.getMessage());
+            if (e.getCause() != null) {
+                log.error("Caused by: {}", e.getCause().getMessage());
+            }
+            throw e;
+        }
         
-        log.info("DOCX to PDF conversion completed successfully");
         return pdfOutputStream;
     }
+
 
     /**
      * Replace variables in a DOCX and convert to PDF in one operation
