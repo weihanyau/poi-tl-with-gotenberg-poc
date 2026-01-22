@@ -5,14 +5,14 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Map;
 
-import org.docx4j.Docx4J;
-import org.docx4j.fonts.BestMatchingMapper;
-import org.docx4j.fonts.Mapper;
-import org.docx4j.model.datastorage.migration.VariablePrepare;
-import org.docx4j.openpackaging.packages.WordprocessingMLPackage;
-import org.docx4j.openpackaging.parts.WordprocessingML.MainDocumentPart;
+import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.springframework.stereotype.Service;
 
+import com.deepoove.poi.XWPFTemplate;
+import com.deepoove.poi.config.Configure;
+
+import fr.opensagres.poi.xwpf.converter.pdf.PdfConverter;
+import fr.opensagres.poi.xwpf.converter.pdf.PdfOptions;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
@@ -20,10 +20,10 @@ import lombok.extern.slf4j.Slf4j;
 public class DocumentService {
 
     /**
-     * Replace variables in a DOCX file with provided values
-     * Variables in the DOCX should be in the format: ${variableName}
+     * Replace variables in a DOCX file with provided values using poi-tl
+     * Variables in the DOCX should be in the format: {{variableName}}
      * 
-     * Uses docx4j's built-in VariablePrepare and variableReplace methods
+     * Uses poi-tl template engine for variable replacement
      *
      * @param inputStream Input DOCX file stream
      * @param variables Map of variable names to replacement values
@@ -31,25 +31,20 @@ public class DocumentService {
      * @throws Exception if document processing fails
      */
     public ByteArrayOutputStream replaceVariablesInDocx(InputStream inputStream, Map<String, String> variables) throws Exception {
-        log.info("Starting variable replacement in DOCX");
+        log.info("Starting variable replacement in DOCX using poi-tl");
         
-        // Load the DOCX file
-        WordprocessingMLPackage wordMLPackage = WordprocessingMLPackage.load(inputStream);
-        MainDocumentPart documentPart = wordMLPackage.getMainDocumentPart();
+        // Configure poi-tl with custom settings if needed
+        Configure config = Configure.builder().build();
         
-        // Prepare the document for variable replacement
-        // This joins up runs that may have been split, which is essential for variable replacement to work
-        VariablePrepare.prepare(wordMLPackage);
-        log.debug("Document prepared for variable replacement");
-        
-        // Use docx4j's built-in variableReplace method
-        documentPart.variableReplace(variables);
-        log.info("Variable replacement completed successfully");
+        // Create template from input stream
+        XWPFTemplate template = XWPFTemplate.compile(inputStream, config).render(variables);
         
         // Save to ByteArrayOutputStream
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        wordMLPackage.save(outputStream);
+        template.write(outputStream);
+        template.close();
         
+        log.info("Variable replacement completed successfully");
         return outputStream;
     }
 
@@ -63,24 +58,27 @@ public class DocumentService {
     public ByteArrayOutputStream convertDocxToPdf(InputStream docxInputStream) throws Exception {
         log.info("Starting DOCX to PDF conversion");
         
-        // Load the DOCX file
-        WordprocessingMLPackage wordMLPackage = WordprocessingMLPackage.load(docxInputStream);
-        
-        // Remove table borders to prevent unwanted borders in PDF
-        // removeTableBorders(wordMLPackage);
-        
-        // Set up font mapper for PDF conversion
-        Mapper fontMapper = new BestMatchingMapper();
-        wordMLPackage.setFontMapper(fontMapper);
-        
-        // Create output stream for PDF
-        ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream();
-        
         try {
-            // Convert to PDF using Docx4J.toPDF
-            Docx4J.toPDF(wordMLPackage, pdfOutputStream);
+            // Load the DOCX file using Apache POI
+            XWPFDocument document = new XWPFDocument(docxInputStream);
+            
+            // Create output stream for PDF
+            ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream();
+            
+            // Configure PDF options with font encoding
+            PdfOptions options = PdfOptions.create();
+            
+            // Enable font encoding to preserve fonts better
+            options.fontEncoding("UTF-8");
+            
+            // Convert to PDF using fr.opensagres.xdocreport
+            PdfConverter.getInstance().convert(document, pdfOutputStream, options);
+            
+            document.close();
             
             log.info("DOCX to PDF conversion completed successfully");
+            return pdfOutputStream;
+            
         } catch (Exception e) {
             log.error("PDF conversion failed: {}", e.getMessage());
             if (e.getCause() != null) {
@@ -88,8 +86,6 @@ public class DocumentService {
             }
             throw e;
         }
-        
-        return pdfOutputStream;
     }
 
 

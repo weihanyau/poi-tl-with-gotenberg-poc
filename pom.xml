@@ -20,7 +20,8 @@
 
     <properties>
         <java.version>17</java.version>
-        <docx4j.version>11.5.9</docx4j.version>
+        <poi-tl.version>1.12.2</poi-tl.version>
+        <poi.version>5.2.5</poi.version>
     </properties>
 
     <dependencies>
@@ -30,38 +31,32 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- docx4j for Word document manipulation -->
+        <!-- poi-tl for Word document template engine -->
         <dependency>
-            <groupId>org.docx4j</groupId>
-            <artifactId>docx4j-JAXB-ReferenceImpl</artifactId>
-            <version>${docx4j.version}</version>
+            <groupId>com.deepoove</groupId>
+            <artifactId>poi-tl</artifactId>
+            <version>${poi-tl.version}</version>
         </dependency>
 
-        <!-- docx4j export for PDF conversion -->
+        <!-- Apache POI for Word document manipulation -->
         <dependency>
-            <groupId>org.docx4j</groupId>
-            <artifactId>docx4j-export-fo</artifactId>
-            <version>${docx4j.version}</version>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>${poi.version}</version>
         </dependency>
 
-        <!-- Apache FOP for PDF rendering -->
+        <!-- Apache PDFBox for PDF conversion -->
         <dependency>
-            <groupId>org.apache.xmlgraphics</groupId>
-            <artifactId>fop</artifactId>
-            <version>2.9</version>
-            <exclusions>
-                <exclusion>
-                    <groupId>xml-apis</groupId>
-                    <artifactId>xml-apis</artifactId>
-                </exclusion>
-            </exclusions>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>2.0.30</version>
         </dependency>
 
-        <!-- Batik for FOP -->
+        <!-- fr.opensagres.xdocreport for DOCX to PDF conversion -->
         <dependency>
-            <groupId>org.apache.xmlgraphics</groupId>
-            <artifactId>batik-svg-dom</artifactId>
-            <version>1.17</version>
+            <groupId>fr.opensagres.xdocreport</groupId>
+            <artifactId>fr.opensagres.poi.xwpf.converter.pdf</artifactId>
+            <version>2.0.4</version>
         </dependency>
 
         <!-- Lombok for reducing boilerplate code -->
