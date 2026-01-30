@@ -5,19 +5,30 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Map;
 
-import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestTemplate;
 
 import com.deepoove.poi.XWPFTemplate;
 import com.deepoove.poi.config.Configure;
 
-import fr.opensagres.poi.xwpf.converter.pdf.PdfConverter;
-import fr.opensagres.poi.xwpf.converter.pdf.PdfOptions;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
 public class DocumentService {
+
+    @Value("${gotenberg.url}")
+    private String gotenbergUrl;
+
+    private final RestTemplate restTemplate = new RestTemplate();
 
     /**
      * Replace variables in a DOCX file with provided values using poi-tl
@@ -49,42 +60,58 @@ public class DocumentService {
     }
 
     /**
-     * Convert a DOCX file to PDF
+     * Convert a DOCX file to PDF using Gotenberg service
      *
      * @param docxInputStream Input DOCX file stream
      * @return ByteArrayOutputStream containing the generated PDF
      * @throws Exception if conversion fails
      */
     public ByteArrayOutputStream convertDocxToPdf(InputStream docxInputStream) throws Exception {
-        log.info("Starting DOCX to PDF conversion");
+        log.info("Starting DOCX to PDF conversion using Gotenberg");
         
         try {
-            // Load the DOCX file using Apache POI
-            XWPFDocument document = new XWPFDocument(docxInputStream);
+            // Read DOCX into byte array
+            byte[] docxBytes = docxInputStream.readAllBytes();
             
-            // Create output stream for PDF
-            ByteArrayOutputStream pdfOutputStream = new ByteArrayOutputStream();
+            // Prepare multipart request for Gotenberg
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
             
-            // Configure PDF options with font encoding
-            PdfOptions options = PdfOptions.create();
+            MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
             
-            // Enable font encoding to preserve fonts better
-            options.fontEncoding("UTF-8");
+            // Add the DOCX file
+            ByteArrayResource fileResource = new ByteArrayResource(docxBytes) {
+                @Override
+                public String getFilename() {
+                    return "document.docx";
+                }
+            };
+            body.add("files", fileResource);
             
-            // Convert to PDF using fr.opensagres.xdocreport
-            PdfConverter.getInstance().convert(document, pdfOutputStream, options);
+            HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
             
-            document.close();
+            // Call Gotenberg API
+            String gotenbergEndpoint = gotenbergUrl + "/forms/libreoffice/convert";
+            log.info("Calling Gotenberg at: {}", gotenbergEndpoint);
             
-            log.info("DOCX to PDF conversion completed successfully");
-            return pdfOutputStream;
+            ResponseEntity<byte[]> response = restTemplate.postForEntity(
+                gotenbergEndpoint,
+                requestEntity,
+                byte[].class
+            );
+            
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                outputStream.write(response.getBody());
+                log.info("DOCX to PDF conversion completed successfully");
+                return outputStream;
+            } else {
+                throw new RuntimeException("Gotenberg conversion failed with status: " + response.getStatusCode());
+            }
             
         } catch (Exception e) {
-            log.error("PDF conversion failed: {}", e.getMessage());
-            if (e.getCause() != null) {
-                log.error("Caused by: {}", e.getCause().getMessage());
-            }
-            throw e;
+            log.error("PDF conversion failed: {}", e.getMessage(), e);
+            throw new RuntimeException("Failed to convert DOCX to PDF using Gotenberg: " + e.getMessage(), e);
         }
     }
 
