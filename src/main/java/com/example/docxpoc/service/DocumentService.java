@@ -18,6 +18,7 @@ import org.springframework.web.client.RestTemplate;
 
 import com.deepoove.poi.XWPFTemplate;
 import com.deepoove.poi.config.Configure;
+import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -41,14 +42,17 @@ public class DocumentService {
      * @return ByteArrayOutputStream containing the modified DOCX
      * @throws Exception if document processing fails
      */
-    public ByteArrayOutputStream replaceVariablesInDocx(InputStream inputStream, Map<String, String> variables) throws Exception {
+    public ByteArrayOutputStream replaceVariablesInDocx(InputStream inputStream, Map<String, Object> variables) throws Exception {
         log.info("Starting variable replacement in DOCX using poi-tl");
+
+        LoopRowTableRenderPolicy loopRowTableRenderPolicy = new LoopRowTableRenderPolicy();
         
         // Configure poi-tl with custom settings if needed
-        Configure config = Configure.builder().build();
-        
+        Configure config = Configure.builder().bind("repayments", loopRowTableRenderPolicy).build();
+
         // Create template from input stream
         XWPFTemplate template = XWPFTemplate.compile(inputStream, config).render(variables);
+
         
         // Save to ByteArrayOutputStream
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
@@ -124,7 +128,7 @@ public class DocumentService {
      * @return ByteArrayOutputStream containing the generated PDF
      * @throws Exception if processing fails
      */
-    public ByteArrayOutputStream replaceVariablesAndConvertToPdf(InputStream inputStream, Map<String, String> variables) throws Exception {
+    public ByteArrayOutputStream replaceVariablesAndConvertToPdf(InputStream inputStream, Map<String, Object> variables) throws Exception {
         log.info("Starting variable replacement and PDF conversion");
         
         // First replace variables
