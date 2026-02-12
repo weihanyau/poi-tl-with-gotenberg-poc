@@ -85,6 +85,9 @@ curl -X POST http://localhost:8080/api/documents/process \
 - `{{testVariable}}` → "I am replaced"
 - `{{termLoan}}` → "150,000"
 - `{{totalAmount}}` → "200,000"
+- `{{totalRepaymentAmount}}` → "12,000"
+- `{{repayments}}` → Table of 12 monthly repayment rows (using `LoopRowTableRenderPolicy`)
+- `{{signatureSection}}` → 2 signature blocks, each with an image, name, date, designation, and NRIC
 
 ## Creating a Template DOCX
 
@@ -96,51 +99,79 @@ This is a test document.
 The test variable is: {{testVariable}}
 Term Loan: {{termLoan}}
 Total Amount: {{totalAmount}}
+Total Repayment Amount: {{totalRepaymentAmount}}
 
 These will be replaced automatically.
 ```
 
-A sample template is provided in `src/main/resources/templates/sample_template.docx`.
+### Table Loops (Repayments)
+
+To render repeating table rows, create a table in your DOCX with a row containing `{{repayments}}` as a tag. poi-tl's `LoopRowTableRenderPolicy` will duplicate the row for each entry. Use field names from the `Repayments` entity:
+
+| Month | Amount |
+|-------|--------|
+| {{month}} | {{amount}} |
+
+### Signature Sections
+
+The `{{signatureSection}}` variable renders signature blocks, each containing:
+- `{{signature}}` - an embedded signature image (PNG)
+- `{{name}}` - signer's name
+- `{{date}}` - date of signing
+- `{{designation}}` - signer's designation
+- `{{nric}}` - signer's NRIC
+
+A sample signature image is provided at `src/main/resources/signature.png`.
+
+See `src/main/resources/templates/README.md` for additional guidance on creating templates.
 
 ## Project Structure
 
 ```
 signature-docx-poc/
 ├── src/
-│   ├── main/
-│   │   ├── java/
-│   │   │   └── com/example/docxpoc/
-│   │   │       ├── DocxPocApplication.java
-│   │   │       ├── controller/
-│   │   │       │   └── DocumentController.java
-│   │   │       └── service/
-│   │   │           └── DocumentService.java
-│   │   └── resources/
-│   │       ├── application.properties
-│   │       └── templates/
-│   │           └── sample_template.docx
-│   └── test/
+│   └── main/
+│       ├── java/
+│       │   └── com/example/docxpoc/
+│       │       ├── DocxPocApplication.java
+│       │       ├── controller/
+│       │       │   └── DocumentController.java
+│       │       ├── entity/
+│       │       │   ├── Repayments.java
+│       │       │   └── Signature.java
+│       │       └── service/
+│       │           └── DocumentService.java
+│       └── resources/
+│           ├── application.properties
+│           ├── application-docker.properties
+│           ├── signature.png
+│           └── templates/
+│               └── README.md
+├── docker-compose.yml
+├── Dockerfile
 └── pom.xml
 ```
 
 ## Dependencies
 
 - Spring Boot 3.2.1
-- docx4j 11.5.9
-- Apache FOP 2.8
+- poi-tl 1.12.2 (DOCX template engine)
+- Apache POI 5.2.5 (OOXML support)
+- Gotenberg 8 (LibreOffice-based PDF conversion microservice)
 - Lombok
 
 ## Notes
 
-- The variable `${testVariable}` is automatically replaced with "I am replaced"
+- Variables use poi-tl's double curly brace syntax: `{{variableName}}`
 - Maximum file upload size: 10MB
 - Supported input format: .docx (Microsoft Word 2007+)
 - Output format: PDF
-- PDF output uses Apache FOP for rendering
+- PDF conversion is handled by Gotenberg (LibreOffice) via HTTP API
 
 ## Troubleshooting
 
 If you encounter PDF conversion issues, ensure:
 1. The DOCX file is not corrupted
-2. Font files are available on the system
-3. Sufficient memory is allocated to the JVM
+2. The Gotenberg service is running and accessible
+3. Font files are available on the system
+4. Sufficient memory is allocated to the JVM
