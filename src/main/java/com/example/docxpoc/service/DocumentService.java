@@ -20,16 +20,19 @@ import com.deepoove.poi.XWPFTemplate;
 import com.deepoove.poi.config.Configure;
 import com.deepoove.poi.plugin.table.LoopRowTableRenderPolicy;
 
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class DocumentService {
 
     @Value("${gotenberg.url}")
     private String gotenbergUrl;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    /** Pooled and timeout-bounded; see {@code HttpClientConfig}. */
+    private final RestTemplate gotenbergRestTemplate;
 
     /**
      * Replace variables in a DOCX file with provided values using poi-tl
@@ -98,7 +101,7 @@ public class DocumentService {
             String gotenbergEndpoint = gotenbergUrl + "/forms/libreoffice/convert";
             log.info("Calling Gotenberg at: {}", gotenbergEndpoint);
             
-            ResponseEntity<byte[]> response = restTemplate.postForEntity(
+            ResponseEntity<byte[]> response = gotenbergRestTemplate.postForEntity(
                 gotenbergEndpoint,
                 requestEntity,
                 byte[].class

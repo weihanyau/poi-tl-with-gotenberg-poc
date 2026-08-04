@@ -45,6 +45,14 @@
             <version>${poi.version}</version>
         </dependency>
 
+        <!-- Apache HttpClient 5 for connection pooling and request timeouts.
+             The default SimpleClientHttpRequestFactory opens a fresh socket per
+             request with no timeouts, which exhausts ephemeral ports under load. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
+
         <!-- Lombok for reducing boilerplate code -->
         <dependency>
             <groupId>org.projectlombok</groupId>

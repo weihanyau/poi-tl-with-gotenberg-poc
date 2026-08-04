@@ -22,6 +22,10 @@ Thumbs.db
 *.log
 logs/
 
+# Load test artefacts
+loadtest-results/
+src/main/resources/templates/*.docx
+
 # Temporary files
 *.tmp
 *.bak
