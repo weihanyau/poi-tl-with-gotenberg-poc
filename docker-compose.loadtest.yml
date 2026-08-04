@@ -27,7 +27,9 @@ services:
       # inflate the conversion count.
       - --webhook-max-retry=1
       - --webhook-client-timeout=120s
-      - --log-level=error
+      # Set GOTENBERG_LOG_LEVEL=info to log every request, which lets you count how many
+      # each replica served and verify the load is actually being distributed.
+      - --log-level=${GOTENBERG_LOG_LEVEL:-error}
     # No host port binding: replicas cannot share one.
     deploy:
       replicas: ${GOTENBERG_REPLICAS:-4}
@@ -51,7 +53,9 @@ services:
       - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=docker,loadtest
-      - GOTENBERG_URL=http://gotenberg-lb:3000
+      # Set GOTENBERG_URL=http://gotenberg:3000 to bypass nginx and rely on Docker's
+      # own DNS round-robin instead. See the README on why that distributes poorly.
+      - GOTENBERG_URL=${GOTENBERG_URL:-http://gotenberg-lb:3000}
       # Gotenberg resolves this from inside its own container, not from the host.
       - LOADTEST_WEBHOOK_BASE_URL=http://docx-service:8080
     volumes:

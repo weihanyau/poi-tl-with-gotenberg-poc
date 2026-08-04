@@ -173,6 +173,45 @@ The summary reports throughput and min/p50/p95/p99/max latency. Generated PDFs a
 counted and discarded, never retained — at 10,000 conversions, keeping them would make
 the run measure GC pressure instead of conversion throughput.
 
+### Why nginx? Doesn't Docker round-robin already?
+
+Docker's embedded DNS *does* return every replica address and rotate the order —
+`getent hosts gotenberg` inside the network returns all four IPs. But that only helps a
+client that re-resolves on every request. This app uses a pooled Apache HttpClient with
+keep-alive: it resolves `gotenberg` once, connects to the first address returned, and then
+reuses that connection. The JVM's own 30-second DNS cache compounds it. The result is that
+every conversion lands on one replica.
+
+Measured, 100 conversions across 4 replicas, counted from each container's request log:
+
+| `GOTENBERG_URL` | Conversions per replica | Throughput |
+|---|---|---|
+| `http://gotenberg:3000` (Docker DNS) | **100 / 0 / 0 / 0** | 2.00/s |
+| `http://gotenberg-lb:3000` (nginx) | 28 / 36 / 14 / 22 | 4.61 - 5.38/s |
+
+Docker DNS mode matched a single container exactly (1.93-2.02/s measured directly), which
+is the giveaway: the other three replicas sat idle the whole run.
+
+nginx avoids this because `loadtest/nginx.conf` puts the upstream in a *variable*
+(`set $gotenberg gotenberg:3000; proxy_pass http://$gotenberg;`), which forces a fresh
+resolver lookup per request. An ordinary `upstream` block would resolve once at startup and
+pin just as badly. Distribution is still not perfectly even (14-36) because it depends on
+Docker's DNS record ordering, but every replica does work.
+
+Verify it yourself:
+
+```bash
+GOTENBERG_LOG_LEVEL=info docker compose -f docker-compose.loadtest.yml up -d --build
+# ...run a load test, then:
+for c in $(docker compose -f docker-compose.loadtest.yml ps -q gotenberg); do
+  echo "$c: $(docker logs $c 2>&1 | grep -c 'forms/libreoffice/convert')"
+done
+```
+
+The alternatives to nginx would be disabling keep-alive, setting
+`networkaddress.cache.ttl=0`, or resolving all replica IPs in Java and round-robining
+client-side. All of them are more code and slower per request than one proxy hop.
+
 ### Measured baseline
 
 Measured on a 10-CPU Docker Desktop VM on macOS, with the app running on the host.
