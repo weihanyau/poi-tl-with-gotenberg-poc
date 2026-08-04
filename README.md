@@ -357,9 +357,51 @@ Gotenberg calls in `service/GotenbergClient.java`.
 - Spring Boot 3.2.1
 - Apache HttpClient 5 (pooled Gotenberg client)
 - poi-tl 1.12.2 (DOCX template engine)
-- Apache POI 5.2.5 (OOXML support)
+- Apache POI 5.5.1 (OOXML support, upgraded independently of poi-tl — see below)
 - Gotenberg 8 (LibreOffice-based PDF conversion microservice)
 - Lombok
+
+## Upgrading Apache POI independently of poi-tl
+
+poi-tl has not had a stable release since 1.12.2 (Mar 2024) and still declares Apache
+POI 5.2.2. POI is therefore pinned directly via the `poi.version` property in `pom.xml`,
+which overrides the transitive version, so POI can be kept current without waiting on a
+poi-tl release.
+
+**This is not covered by the compiler.** The application calls poi-tl only and never
+Apache POI directly, so an incompatible POI upgrade still compiles cleanly and fails at
+runtime inside poi-tl, typically as a `NoSuchMethodError`. `PoiTlRenderTest` exists to
+catch that: it renders the real template through `DocumentService` and asserts on the
+result. Run `mvn test` after any POI bump.
+
+### Verified upgrade path
+
+Stepped 5.2.5 → 5.3.0 → 5.4.1 → 5.5.1, one commit per hop, tests green at every step.
+
+| POI | xmlbeans | commons-compress | commons-io | commons-collections4 |
+|---|---|---|---|---|
+| 5.2.5 | 5.2.0 | 1.25.0 | 2.15.0 | 4.4 |
+| 5.3.0 | 5.2.1 | 1.26.2 | 2.16.1 | 4.4 |
+| 5.4.1 | 5.3.0 | 1.27.1 | 2.18.0 | 4.4 |
+| 5.5.1 | 5.3.0 | 1.28.0 | 2.21.0 | 4.5.0 |
+
+POI 5.3.0 raises its baseline to Java 11; this project targets 17. POI logs through
+`log4j-api`, already bridged to SLF4J by Spring Boot's managed `log4j-to-slf4j`.
+
+### Output equivalence
+
+The generated PDF is unchanged. Converting the same template on 5.2.5 and 5.5.1 produced
+PDFs of identical size (339,632 bytes, 181 pages); decompressing every PDF stream and
+comparing showed the only difference to be the XMP creation timestamp.
+
+The rendered DOCX differs in exactly one respect: POI 5.2.5 emitted two empty `<w:u/>`
+elements in the signature block that 5.5.1 omits. These carry no `w:val`, are absent from
+the source template, and have no effect on the rendered PDF.
+
+A 300-conversion load run with `renderPerRequest=true` completed 300/300 with no failures
+and no POI-related errors across 336 renders. Throughput is not compared here: the two
+builds were exercised in different environments (container vs host JVM) and Gotenberg
+dominates end-to-end latency, so the numbers are not attributable to POI.
 
 ## Notes
 
