@@ -114,10 +114,6 @@ public class LoadTestService {
         log.info("Load test template cached ({} bytes)", templateBytes.length);
     }
 
-    public boolean hasTemplate() {
-        return uploadedTemplate.get() != null || new ClassPathResource(CLASSPATH_TEMPLATE).exists();
-    }
-
     public LoadTestRun getRun(String runId) {
         return runs.get(runId);
     }
@@ -297,6 +293,13 @@ public class LoadTestService {
                 .toByteArray();
     }
 
+    /**
+     * Resolves the template bytes once per run: the uploaded template if present,
+     * otherwise the classpath fallback.
+     *
+     * <p>Read once and reused for every conversion, so neither the upload nor this read
+     * appears in the measurement.
+     */
     private byte[] resolveTemplate() throws IOException {
         byte[] uploaded = uploadedTemplate.get();
         if (uploaded != null) {

@@ -24,6 +24,9 @@ import lombok.extern.slf4j.Slf4j;
 /**
  * Control plane for Gotenberg load tests, plus the webhook endpoints Gotenberg calls
  * back on in async mode.
+ *
+ * <p><b>Do not expose these endpoints outside a local or dedicated test environment.</b>
+ * They are unauthenticated and will happily saturate the backend on request.
  */
 @Slf4j
 @RestController

@@ -117,12 +117,17 @@ mvn spring-boot:run -Dspring-boot.run.profiles=loadtest
 ### 2. Upload a template
 
 ```bash
-curl -X POST http://localhost:8080/api/loadtest/template -F "file=@loadtest/smoke-template.docx"
+curl -X POST http://localhost:8080/api/loadtest/template -F "file=@loadtest/my-template.docx"
 ```
 
-Upload your real template — render cost and PDF size dominate the results (see
-[Measured baseline](#measured-baseline)). Real templates are gitignored; keep them out
-of the repo.
+The upload happens **once** and the bytes are cached and reused for every conversion, so
+it does not appear in the measurement. Re-upload after an app restart. If nothing is
+uploaded, the harness falls back to the classpath at
+`templates/loadtest-template.docx`.
+
+Use your real template — render cost and PDF size dominate the results (see
+[Measured baseline](#measured-baseline)). Real templates are gitignored; keep them out of
+the repo.
 
 `loadtest/smoke-template.docx` is a tracked, generated fallback so the harness runs out
 of the box. It exercises the plain text variables and a static table but **omits** the
@@ -149,6 +154,9 @@ curl -X POST "http://localhost:8080/api/loadtest/run?count=10000&mode=sync&concu
 | `concurrency` | 20 | Maximum conversions in flight |
 | `renderPerRequest` | `false` | `false` renders the DOCX once and reuses it, isolating Gotenberg. `true` re-renders per request for the full poi-tl + Gotenberg figure. |
 
+> The `/api/loadtest/*` endpoints are unauthenticated and will saturate the backend on
+> request. Do not expose them outside a local or dedicated test environment.
+
 The run starts in the background and returns a `runId`. Only one run is allowed at a
 time — overlapping runs would contend for the same Gotenberg workers.
 
@@ -167,47 +175,67 @@ the run measure GC pressure instead of conversion throughput.
 
 ### Measured baseline
 
-All figures: 100 documents, 4 Gotenberg replicas, 10-CPU Docker VM, `renderPerRequest=false`.
+Measured on a 10-CPU Docker Desktop VM on macOS, with the app running on the host.
+`renderPerRequest=false` throughout.
 
-**Real Letter of Offer template** (4.1MB DOCX, 181-page PDF, ~328KB per PDF) — the
-figure to plan against:
+> These absolute numbers are host-limited and noisy — repeat runs of an identical config
+> varied between 3.16/s and 5.75/s. Treat them as relative comparisons, not capacity
+> figures. Run on a dedicated Linux host with a known CPU allocation before planning
+> against them.
 
-| Mode | concurrency | Wall clock | Throughput | p50 | p95 |
-|---|---|---|---|---|---|
-| sync | 8 | 18.89s | 5.29/s | 1170ms | 2996ms |
-| sync | 20 | 17.94s | 5.58/s | 3382ms | 5827ms |
-| sync | 40 | 19.50s | 5.13/s | 5491ms | 9546ms |
-| webhook | 20 | 17.66s | 5.66/s | 2701ms | 5194ms |
+#### Per-conversion cost
 
-**Generated smoke template** (2.5KB DOCX, 1-page PDF) for contrast:
+Sequential (`concurrency=1`), direct to a single warmed container, so no queueing:
 
-| Mode | replicas | Wall clock | Throughput | p50 |
+| Template | DOCX | PDF | p50 per conversion | Sequential rate |
 |---|---|---|---|---|
-| sync | 1 | 13.15s | 7.6/s | 2494ms |
-| sync | 4 | 4.55s | 22.0/s | 758ms |
-| webhook | 4 | 4.28s | 23.4/s | 705ms |
+| `smoke-template.docx` | 2.5KB | 1 page, 22KB | 128ms | 6.91/s |
+| Real Letter of Offer | 4.1MB | 20 pages, 320KB | **502ms** | 1.75/s |
 
-Notes on interpreting these:
+The real template costs **3.9x more per conversion**. Its DOCX is large because it embeds
+eight fonts (~5.4MB of `.odttf`), which LibreOffice must load and subset on every
+conversion, on top of laying out 20 pages instead of 1. This is the single biggest factor
+in the results.
 
-- **The template dominates everything else.** The same stack does 22/s on a 1-page
-  document and 5.6/s on the 181-page real one. Any number measured against a toy
-  template is meaningless for capacity planning.
-- **Raising concurrency past saturation buys nothing.** Throughput is flat at ~5.1-5.7/s
-  across concurrency 8, 20 and 40, while p50 latency grows almost linearly (1170ms ->
-  3382ms -> 5491ms). The backend is already saturated at 8. Add replicas, not
-  concurrency.
-- **Sync and webhook throughput are equivalent** once the backend is saturated (5.58 vs
-  5.66/s, within noise). Webhook's benefit is not speed, it is that the caller does not
-  hold a thread and a socket open for the duration of each conversion.
-- **Scaling replicas is sub-linear.** 4x the replicas gave 2.9x throughput. Past roughly
-  one replica per 2 host CPUs they contend for the same cores.
-- **A single Gotenberg container is not serialised.** It managed 7.6 conversions/s, so it
-  processes conversions concurrently despite there being no
-  `--libreoffice-max-concurrency` flag.
+#### Throughput vs replicas and concurrency (real template)
+
+| Setup | concurrency | Throughput | p50 | p95 | Gotenberg CPU |
+|---|---|---|---|---|---|
+| 1 container, no nginx | 8 | 1.93 - 2.02/s | ~4000ms | — | — |
+| nginx + 2 replicas | 8 | 3.19/s | 2132ms | 3956ms | 216% |
+| nginx + 4 replicas | 8 | 3.05 - 5.29/s | ~2200ms | 5594ms | 329% |
+| nginx + 8 replicas | 8 | 3.87 - 5.75/s | 1577ms | 5511ms | 346% |
+| nginx + 8 replicas | 24 | 3.73/s | 4243ms | 15697ms | **914%** |
+| nginx + 8 replicas | 48 | **2.61/s** | 15791ms | 26309ms | **924%** |
+
+#### Why it stops scaling
+
+- **The host CPU is the wall, not Gotenberg.** A conversion needs ~0.5s of largely
+  single-threaded LibreOffice work. On 10 CPUs the theoretical ceiling is ~20/s; the best
+  observed was 5.75/s, so real efficiency is only ~30%. The rest goes to LibreOffice
+  startup and IPC, handling a 4MB upload per request, and writing a 320KB PDF.
+- **Past concurrency 8, more load makes it slower.** Going 8 -> 24 -> 48 pushed CPU from
+  346% to ~920% of the 1000% available while throughput *fell* from 3.87 to 2.61/s and p50
+  went from 1.6s to 15.8s. That is thrashing: the replicas contend for cores and burn CPU
+  on context switching rather than conversions. Adding concurrency past this point only
+  inflates latency.
+- **Replicas help, but sub-linearly and only up to the core count.** 1 -> 8 replicas gave
+  roughly 2-3x, not 8x. Past about one replica per host CPU there is nothing left to win.
+- **Sync and webhook throughput are equivalent** (5.58 vs 5.66/s at 4 replicas, within
+  noise). Webhook's benefit is not speed — it is that the caller does not hold a thread and
+  socket open for the duration of each conversion.
 - **Discard the first run.** A cold LibreOffice measured 14.2/s where a warm one measured
-  23.4/s on identical settings.
-- At 5.5/s, **10,000 real documents take roughly 30 minutes** on this hardware, and
-  produce about 3.2GB of PDF (counted and discarded, not written).
+  23.4/s on identical settings. The harness has no warm-up phase; do a throwaway run first.
+- **Do not use `file` to count PDF pages.** It reports 181 pages for these outputs because
+  it greps the first `/Count` it finds, which belongs to an unrelated object. The real
+  count is 20. Use a PDF library, or count `/Type /Page` objects.
+
+#### Planning the 10,000-document run
+
+At the best sustained rate observed (~5/s), 10,000 real documents take **~35 minutes** and
+produce ~3.2GB of PDF (counted and discarded, not written). Use `concurrency=8`; higher
+values measurably hurt on this hardware. To go faster, the lever is more CPU, not more
+replicas or more concurrency.
 
 ### Gotenberg flags that matter under load
 
