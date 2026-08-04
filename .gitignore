@@ -26,6 +26,11 @@ logs/
 loadtest-results/
 src/main/resources/templates/*.docx
 
+# Real templates are internal documents and must not be committed. The generated
+# smoke template is the only one tracked.
+loadtest/*.docx
+!loadtest/smoke-template.docx
+
 # Temporary files
 *.tmp
 *.bak

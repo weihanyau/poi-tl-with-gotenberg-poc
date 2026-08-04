@@ -120,10 +120,14 @@ mvn spring-boot:run -Dspring-boot.run.profiles=loadtest
 curl -X POST http://localhost:8080/api/loadtest/template -F "file=@loadtest/smoke-template.docx"
 ```
 
-`loadtest/smoke-template.docx` is a generated smoke template. It exercises the plain
-text variables and a static table but **omits** the `{{repayments}}` loop tag and
-`{{signatureSection}}`. Upload your real template for representative numbers — render
-cost and PDF size both depend on it.
+Upload your real template — render cost and PDF size dominate the results (see
+[Measured baseline](#measured-baseline)). Real templates are gitignored; keep them out
+of the repo.
+
+`loadtest/smoke-template.docx` is a tracked, generated fallback so the harness runs out
+of the box. It exercises the plain text variables and a static table but **omits** the
+`{{repayments}}` loop tag and `{{signatureSection}}`, and its 1-page output is roughly
+4x faster to convert than a real Letter of Offer. Do not plan capacity from it.
 
 ### 3. Run
 
@@ -163,24 +167,47 @@ the run measure GC pressure instead of conversion throughput.
 
 ### Measured baseline
 
-100 documents at `concurrency=20`, smoke template, 10-CPU Docker VM:
+All figures: 100 documents, 4 Gotenberg replicas, 10-CPU Docker VM, `renderPerRequest=false`.
 
-| Setup | Wall clock | Throughput | p50 | p95 |
+**Real Letter of Offer template** (4.1MB DOCX, 181-page PDF, ~328KB per PDF) — the
+figure to plan against:
+
+| Mode | concurrency | Wall clock | Throughput | p50 | p95 |
+|---|---|---|---|---|---|
+| sync | 8 | 18.89s | 5.29/s | 1170ms | 2996ms |
+| sync | 20 | 17.94s | 5.58/s | 3382ms | 5827ms |
+| sync | 40 | 19.50s | 5.13/s | 5491ms | 9546ms |
+| webhook | 20 | 17.66s | 5.66/s | 2701ms | 5194ms |
+
+**Generated smoke template** (2.5KB DOCX, 1-page PDF) for contrast:
+
+| Mode | replicas | Wall clock | Throughput | p50 |
 |---|---|---|---|---|
-| sync, 1 replica | 13.15s | 7.6/s | 2494ms | 2837ms |
-| sync, 4 replicas | 4.55s | 22.0/s | 758ms | 1496ms |
-| webhook, 4 replicas | 4.28s | 23.4/s | 705ms | 1280ms |
+| sync | 1 | 13.15s | 7.6/s | 2494ms |
+| sync | 4 | 4.55s | 22.0/s | 758ms |
+| webhook | 4 | 4.28s | 23.4/s | 705ms |
 
 Notes on interpreting these:
 
-- **Scaling is sub-linear.** 4x the replicas gave 2.9x the throughput. Past roughly one
-  replica per 2 host CPUs, replicas just contend for the same cores.
-- **A single Gotenberg container is not serialised.** It managed 7.6 conversions/s, so
-  it processes conversions concurrently despite there being no
+- **The template dominates everything else.** The same stack does 22/s on a 1-page
+  document and 5.6/s on the 181-page real one. Any number measured against a toy
+  template is meaningless for capacity planning.
+- **Raising concurrency past saturation buys nothing.** Throughput is flat at ~5.1-5.7/s
+  across concurrency 8, 20 and 40, while p50 latency grows almost linearly (1170ms ->
+  3382ms -> 5491ms). The backend is already saturated at 8. Add replicas, not
+  concurrency.
+- **Sync and webhook throughput are equivalent** once the backend is saturated (5.58 vs
+  5.66/s, within noise). Webhook's benefit is not speed, it is that the caller does not
+  hold a thread and a socket open for the duration of each conversion.
+- **Scaling replicas is sub-linear.** 4x the replicas gave 2.9x throughput. Past roughly
+  one replica per 2 host CPUs they contend for the same cores.
+- **A single Gotenberg container is not serialised.** It managed 7.6 conversions/s, so it
+  processes conversions concurrently despite there being no
   `--libreoffice-max-concurrency` flag.
-- **Discard the first run.** A cold LibreOffice measured 14.2/s where a warm one
-  measured 23.4/s on identical settings.
-- Extrapolating 22/s, 10,000 documents takes roughly 8 minutes on this hardware.
+- **Discard the first run.** A cold LibreOffice measured 14.2/s where a warm one measured
+  23.4/s on identical settings.
+- At 5.5/s, **10,000 real documents take roughly 30 minutes** on this hardware, and
+  produce about 3.2GB of PDF (counted and discarded, not written).
 
 ### Gotenberg flags that matter under load
 
