@@ -20,9 +20,10 @@ services:
       - --api-timeout=300s
       - --api-body-limit=100MB
       - --libreoffice-auto-start=true
-      # Default is 10: LibreOffice restarts every 10 conversions, and the restart cost
-      # would otherwise dominate the measurement.
-      - --libreoffice-restart-after=0
+      # Gotenberg's default of 10. Restarting LibreOffice every 10 conversions costs
+      # throughput, but it is what production runs on, so measure it. Set
+      # GOTENBERG_RESTART_AFTER=0 to disable restarts and isolate the conversion cost.
+      - --libreoffice-restart-after=${GOTENBERG_RESTART_AFTER:-10}
       # Default is 4 retries, which would deliver the same PDF several times and
       # inflate the conversion count.
       - --webhook-max-retry=1

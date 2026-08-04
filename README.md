@@ -224,19 +224,28 @@ Measured on a 10-CPU Docker Desktop VM on macOS, with the app running on the hos
 
 #### Per-conversion cost
 
-Sequential (`concurrency=1`), direct to a single warmed container, so no queueing:
+Sequential (`concurrency=1`) on a warmed backend, so no queueing:
 
-| Template | DOCX | PDF | p50 per conversion | Sequential rate |
-|---|---|---|---|---|
-| `smoke-template.docx` | 2.5KB | 1 page, 22KB | 128ms | 6.91/s |
-| Real Letter of Offer | 4.1MB | 20 pages, 320KB | **502ms** | 1.75/s |
+| Template | DOCX | PDF | p50 per conversion |
+|---|---|---|---|
+| `smoke-template.docx` | 2.5KB | 1 page, 22KB | 128ms |
+| Real Letter of Offer, 8 embedded fonts | 4.1MB | 20 pages, 320KB | 502ms |
+| Real Letter of Offer, fonts removed | 530KB | 20 pages, 340KB | **448ms** |
 
-The real template costs **3.9x more per conversion**. Its DOCX is large because it embeds
-eight fonts (~5.4MB of `.odttf`), which LibreOffice must load and subset on every
-conversion, on top of laying out 20 pages instead of 1. This is the single biggest factor
-in the results.
+The real template costs **~3.5x more per conversion** than the toy one, and that is
+dominated by laying out 20 pages of content rather than 1.
 
-#### Throughput vs replicas and concurrency (real template)
+**Embedded fonts are a minor factor.** Stripping all eight embedded fonts shrank the DOCX
+8x (4.1MB -> 530KB) but only improved per-conversion time by ~11% (502ms -> 448ms), and the
+output PDF got slightly *larger* (320KB -> 340KB) because LibreOffice substitutes and embeds
+its own subsets instead. Rendered output was byte-identical in content: 20 pages, 54,342
+characters either way. Do not strip fonts expecting a throughput win.
+
+#### Throughput vs replicas and concurrency
+
+Measured with the earlier font-embedded template (4.1MB) and `restart-after=0`. The absolute
+rates are superseded by the table above; the *shape* — replicas help sub-linearly, excess
+concurrency hurts — is what matters here.
 
 | Setup | concurrency | Throughput | p50 | p95 | Gotenberg CPU |
 |---|---|---|---|---|---|
@@ -246,6 +255,21 @@ in the results.
 | nginx + 8 replicas | 8 | 3.87 - 5.75/s | 1577ms | 5511ms | 346% |
 | nginx + 8 replicas | 24 | 3.73/s | 4243ms | 15697ms | **914%** |
 | nginx + 8 replicas | 48 | **2.61/s** | 15791ms | 26309ms | **924%** |
+
+#### LibreOffice restarts help, they don't hurt
+
+`--libreoffice-restart-after` recycles LibreOffice every N conversions. Three runs of 100
+documents each, 4 replicas, `concurrency=8`, fonts-removed template:
+
+| Setting | Mean | Range |
+|---|---|---|
+| `10` (Gotenberg default) | **6.51/s** | 6.27 - 6.90 |
+| `0` (restarts disabled) | 5.29/s | 4.14 - 6.84 |
+
+Disabling restarts was *slower on average and far less consistent*. LibreOffice degrades as
+it accumulates state across conversions, and recycling it keeps throughput stable — which is
+presumably why Gotenberg defaults to 10. Keep the default; the restart cost is real but
+smaller than the degradation it prevents.
 
 #### Why it stops scaling
 
@@ -271,10 +295,16 @@ in the results.
 
 #### Planning the 10,000-document run
 
-At the best sustained rate observed (~5/s), 10,000 real documents take **~35 minutes** and
-produce ~3.2GB of PDF (counted and discarded, not written). Use `concurrency=8`; higher
-values measurably hurt on this hardware. To go faster, the lever is more CPU, not more
-replicas or more concurrency.
+At the current sustained rate (~6.5/s: 4 replicas, `concurrency=8`, `restart-after=10`,
+fonts-removed template), 10,000 documents take **~26 minutes** and produce ~3.4GB of PDF
+(counted and discarded, not written).
+
+```bash
+curl -X POST "http://localhost:8080/api/loadtest/run?count=10000&mode=sync&concurrency=8"
+```
+
+Use `concurrency=8`; higher values measurably hurt on this hardware. To go faster, the lever
+is more CPU, not more replicas or more concurrency.
 
 ### Gotenberg flags that matter under load
 
@@ -282,9 +312,19 @@ Set in `docker-compose.loadtest.yml`; the defaults will distort results:
 
 | Flag | Default | Load test value | Why |
 |---|---|---|---|
-| `--libreoffice-restart-after` | 10 | 0 | Restarting LibreOffice every 10 conversions otherwise dominates the measurement |
 | `--api-timeout` | 30s | 300s | Queued conversions blow through 30s and report as failures rather than backpressure |
 | `--webhook-max-retry` | 4 | 1 | Retries would deliver the same PDF several times and inflate the count |
+| `--libreoffice-restart-after` | 10 | **10 (unchanged)** | Measured faster and more consistent than disabling it; see above |
+
+Overridable for experiments:
+
+```bash
+GOTENBERG_REPLICAS=8 \
+GOTENBERG_RESTART_AFTER=0 \
+GOTENBERG_LOG_LEVEL=info \
+GOTENBERG_URL=http://gotenberg:3000 \
+  docker compose -f docker-compose.loadtest.yml up --build
+```
 
 ### Troubleshooting
 
