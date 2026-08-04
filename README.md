@@ -91,21 +91,28 @@ curl -X POST http://localhost:8080/api/documents/process \
 
 ## Load Testing Gotenberg
 
-A separate stack and set of endpoints exist to measure bulk DOCX-to-PDF throughput in
-both **sync** (blocking HTTP) and **webhook** (Gotenberg calls back with the finished
-PDF) modes.
+Measures bulk DOCX-to-PDF throughput in **sync** (blocking HTTP) and **webhook** (Gotenberg
+POSTs the finished PDF back) modes, against N Gotenberg replicas behind an nginx round-robin
+proxy.
 
-### 1. Start the scaled stack
+### How to run
 
 ```bash
-docker compose -f docker-compose.loadtest.yml up --build
+# 1. Start the stack (8 Gotenberg replicas + nginx on :3000 + app on :8080)
+docker compose -f docker-compose.loadtest.yml up -d --build
 
-# or with more Gotenberg replicas
-GOTENBERG_REPLICAS=8 docker compose -f docker-compose.loadtest.yml up --build
+# 2. Upload the template (cached in memory, reused for every conversion)
+curl -X POST http://localhost:8080/api/loadtest/template -F "file=@loadtest/my-template.docx"
+
+# 3. Warm the backend and throw the result away
+curl -X POST "http://localhost:8080/api/loadtest/run?count=100&mode=sync&concurrency=16"
+
+# 4. Real run
+curl -X POST "http://localhost:8080/api/loadtest/run?count=10000&mode=sync&concurrency=16"
+
+# 5. Poll for progress, or read the CSV when it finishes
+curl http://localhost:8080/api/loadtest/runs/{runId}
 ```
-
-This runs N Gotenberg replicas behind an nginx round-robin proxy on port 3000, plus the
-application with the `loadtest` profile active.
 
 To iterate faster, run only the Gotenberg side in Docker and the app on the host:
 
@@ -114,38 +121,9 @@ docker compose -f docker-compose.loadtest.yml up -d gotenberg gotenberg-lb
 mvn spring-boot:run -Dspring-boot.run.profiles=loadtest
 ```
 
-### 2. Upload a template
+### Parameters
 
-```bash
-curl -X POST http://localhost:8080/api/loadtest/template -F "file=@loadtest/my-template.docx"
-```
-
-The upload happens **once** and the bytes are cached and reused for every conversion, so
-it does not appear in the measurement. Re-upload after an app restart. If nothing is
-uploaded, the harness falls back to the classpath at
-`templates/loadtest-template.docx`.
-
-Use your real template — render cost and PDF size dominate the results (see
-[Measured baseline](#measured-baseline)). Real templates are gitignored; keep them out of
-the repo.
-
-`loadtest/smoke-template.docx` is a tracked, generated fallback so the harness runs out
-of the box. It exercises the plain text variables and a static table but **omits** the
-`{{repayments}}` loop tag and `{{signatureSection}}`, and its 1-page output is roughly
-4x faster to convert than a real Letter of Offer. Do not plan capacity from it.
-
-### 3. Run
-
-```bash
-# sync: blocking HTTP call per conversion
-curl -X POST "http://localhost:8080/api/loadtest/run?count=100&mode=sync&concurrency=20"
-
-# webhook: Gotenberg POSTs each finished PDF back to the app
-curl -X POST "http://localhost:8080/api/loadtest/run?count=100&mode=webhook&concurrency=20"
-
-# 10,000 documents
-curl -X POST "http://localhost:8080/api/loadtest/run?count=10000&mode=sync&concurrency=40"
-```
+`POST /api/loadtest/run`
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -154,188 +132,153 @@ curl -X POST "http://localhost:8080/api/loadtest/run?count=10000&mode=sync&concu
 | `concurrency` | 20 | Maximum conversions in flight |
 | `renderPerRequest` | `false` | `false` renders the DOCX once and reuses it, isolating Gotenberg. `true` re-renders per request for the full poi-tl + Gotenberg figure. |
 
+Only one run is allowed at a time. Runs start in the background and return a `runId`.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/loadtest/template` | Upload the DOCX template |
+| `POST /api/loadtest/run` | Start a run |
+| `GET /api/loadtest/runs/{runId}` | Live or final summary |
+| `GET /api/loadtest/runs` | All run ids |
+
+Environment overrides:
+
+```bash
+GOTENBERG_REPLICAS=12 \
+GOTENBERG_RESTART_AFTER=0 \
+GOTENBERG_LOG_LEVEL=info \
+GOTENBERG_URL=http://gotenberg:3000 \
+  docker compose -f docker-compose.loadtest.yml up -d --build
+```
+
 > The `/api/loadtest/*` endpoints are unauthenticated and will saturate the backend on
 > request. Do not expose them outside a local or dedicated test environment.
 
-The run starts in the background and returns a `runId`. Only one run is allowed at a
-time — overlapping runs would contend for the same Gotenberg workers.
+### Output
 
-### 4. Read results
+Summary JSON reports throughput and min/p50/p95/p99/max latency. Per-request rows go to
+`loadtest-results/{runId}.csv`:
 
-```bash
-curl http://localhost:8080/api/loadtest/runs/{runId}    # live or final summary
-curl http://localhost:8080/api/loadtest/runs            # all run ids
+```
+requestId,jobId,mode,submittedAtEpochMs,completedAtEpochMs,latencyMs,httpStatus,pdfBytes,error
 ```
 
-Per-request rows are written to `loadtest-results/{runId}.csv`
-(`requestId,jobId,mode,submittedAtEpochMs,completedAtEpochMs,latencyMs,httpStatus,pdfBytes,error`).
-The summary reports throughput and min/p50/p95/p99/max latency. Generated PDFs are
-counted and discarded, never retained — at 10,000 conversions, keeping them would make
-the run measure GC pressure instead of conversion throughput.
+PDFs are counted and discarded, never retained.
 
-### Why nginx? Doesn't Docker round-robin already?
+## Load Test Results
 
-Docker's embedded DNS *does* return every replica address and rotate the order —
-`getent hosts gotenberg` inside the network returns all four IPs. But that only helps a
-client that re-resolves on every request. This app uses a pooled Apache HttpClient with
-keep-alive: it resolves `gotenberg` once, connects to the first address returned, and then
-reuses that connection. The JVM's own 30-second DNS cache compounds it. The result is that
-every conversion lands on one replica.
+Measured on a 10-CPU Docker Desktop VM on macOS, `restart-after=10`, real Letter of Offer
+template (530KB DOCX, 20-page 340KB PDF), `renderPerRequest=false`.
 
-Measured, 100 conversions across 4 replicas, counted from each container's request log:
+> Repeat runs of an identical config varied by up to 20%, and one outlier run came in at 40%
+> of the mean. Treat these as relative comparisons, not capacity figures. Re-measure on a
+> dedicated Linux host before planning against them.
+
+### Best configuration
+
+**8 replicas, `concurrency=16` → 7.70/s.** 10,000 documents in **~22 minutes**, ~3.4GB of PDF.
+
+### Replicas
+
+80 documents per run, two runs per cell, mean reported.
+
+| replicas | conc | Throughput | Individual runs | p50 | Gotenberg CPU | vs 1 replica |
+|---|---|---|---|---|---|---|
+| 1 | 8 | 2.06/s | 2.00 / 2.13 | 3761ms | **103%** | 1.0x |
+| 1 | 16 | 1.67/s | 1.70 / 1.64 | 8456ms | 103% | 0.8x |
+| 2 | 8 | 2.14/s | 0.82 / 3.46 | 2921ms | 231% | 1.0x |
+| 2 | 16 | 3.80/s | 4.06 / 3.55 | 3376ms | 212% | 1.8x |
+| 4 | 8 | 6.24/s | 6.42 / 6.06 | 1037ms | 354% | 3.0x |
+| 4 | 16 | 5.90/s | 5.68 / 6.12 | 1846ms | 415% | 2.9x |
+| 8 | 8 | 6.99/s | 7.59 / 6.39 | 835ms | 550% | 3.4x |
+| **8** | **16** | **7.70/s** | 8.16 / 7.24 | 1428ms | 496% | **3.7x** |
+| 12 | 8 | 6.96/s | 6.99 / 6.94 | 877ms | 664% | 3.4x |
+| 12 | 16 | 6.27/s | 6.06 / 6.48 | 1390ms | 747% | 3.0x |
+
+- **One container converts one document at a time.** At 1 replica CPU pins to ~103%, exactly
+  one core. Replicas are the only way to convert in parallel, which is why LibreOffice has no
+  `--libreoffice-max-concurrency` flag.
+- **8 replicas is the peak on 10 CPUs; 12 regresses.** Gains fall off after 4 (3.0x), reach
+  3.7x at 8, then drop to 3.4x at 12 while CPU climbs to 747%.
+- **Scale concurrency with replicas, roughly 2x.** 1 replica is fastest at `concurrency=8`;
+  8 replicas at `concurrency=16`. Too little leaves replicas idle, too much only queues —
+  `concurrency=16` on a single replica was *slower* than 8 (1.67 vs 2.06/s).
+
+### Concurrency beyond the optimum
+
+8 replicas, earlier font-embedded template:
+
+| concurrency | Throughput | p50 | p95 | Gotenberg CPU |
+|---|---|---|---|---|
+| 8 | 3.87/s | 1577ms | 5511ms | 346% |
+| 24 | 3.73/s | 4243ms | 15697ms | 914% |
+| 48 | **2.61/s** | 15791ms | 26309ms | 924% |
+
+Past the useful point, extra load buys latency, not work.
+
+### Per-conversion cost
+
+Sequential (`concurrency=1`) on a warmed backend, so no queueing.
+
+| Template | DOCX | PDF | p50 per conversion |
+|---|---|---|---|
+| `smoke-template.docx` | 2.5KB | 1 page, 22KB | 128ms |
+| Letter of Offer, 8 embedded fonts | 4.1MB | 20 pages, 320KB | 502ms |
+| Letter of Offer, fonts removed | 530KB | 20 pages, 340KB | **448ms** |
+
+- The real template costs ~3.5x the toy one, dominated by laying out 20 pages rather than 1.
+- **Embedded fonts barely matter.** Stripping all eight shrank the DOCX 8x but improved
+  per-conversion time only ~11%, and the PDF got slightly *larger* (LibreOffice embeds its own
+  subsets instead). Content was identical: 20 pages, 54,342 characters either way.
+
+### LibreOffice restarts
+
+`--libreoffice-restart-after`, three runs of 100 documents, 4 replicas, `concurrency=8`.
+
+| Setting | Mean | Range |
+|---|---|---|
+| `10` (Gotenberg default) | **6.51/s** | 6.27 - 6.90 |
+| `0` (disabled) | 5.29/s | 4.14 - 6.84 |
+
+Disabling restarts was slower on average and far less consistent. Keep the default.
+
+### nginx vs Docker DNS
+
+100 conversions across 4 replicas, counted from each container's request log.
 
 | `GOTENBERG_URL` | Conversions per replica | Throughput |
 |---|---|---|
 | `http://gotenberg:3000` (Docker DNS) | **100 / 0 / 0 / 0** | 2.00/s |
 | `http://gotenberg-lb:3000` (nginx) | 28 / 36 / 14 / 22 | 4.61 - 5.38/s |
 
-Docker DNS mode matched a single container exactly (1.93-2.02/s measured directly), which
-is the giveaway: the other three replicas sat idle the whole run.
+Docker DNS returns all replica addresses, but the pooled HttpClient resolves once and reuses
+that keep-alive connection, so every conversion lands on one replica. `nginx.conf` puts the
+upstream in a variable to force a per-request resolver lookup; a plain `upstream` block would
+pin just as badly.
 
-nginx avoids this because `loadtest/nginx.conf` puts the upstream in a *variable*
-(`set $gotenberg gotenberg:3000; proxy_pass http://$gotenberg;`), which forces a fresh
-resolver lookup per request. An ordinary `upstream` block would resolve once at startup and
-pin just as badly. Distribution is still not perfectly even (14-36) because it depends on
-Docker's DNS record ordering, but every replica does work.
+### Sync vs webhook
 
-Verify it yourself:
+Equivalent throughput (5.58 vs 5.66/s at 4 replicas, within noise). Webhook's benefit is not
+speed — the caller does not hold a thread and socket open per conversion.
 
-```bash
-GOTENBERG_LOG_LEVEL=info docker compose -f docker-compose.loadtest.yml up -d --build
-# ...run a load test, then:
-for c in $(docker compose -f docker-compose.loadtest.yml ps -q gotenberg); do
-  echo "$c: $(docker logs $c 2>&1 | grep -c 'forms/libreoffice/convert')"
-done
-```
+### Gotenberg flags
 
-The alternatives to nginx would be disabling keep-alive, setting
-`networkaddress.cache.ttl=0`, or resolving all replica IPs in Java and round-robining
-client-side. All of them are more code and slower per request than one proxy hop.
-
-### Measured baseline
-
-Measured on a 10-CPU Docker Desktop VM on macOS, with the app running on the host.
-`renderPerRequest=false` throughout.
-
-> These absolute numbers are host-limited and noisy — repeat runs of an identical config
-> varied between 3.16/s and 5.75/s. Treat them as relative comparisons, not capacity
-> figures. Run on a dedicated Linux host with a known CPU allocation before planning
-> against them.
-
-#### Per-conversion cost
-
-Sequential (`concurrency=1`) on a warmed backend, so no queueing:
-
-| Template | DOCX | PDF | p50 per conversion |
-|---|---|---|---|
-| `smoke-template.docx` | 2.5KB | 1 page, 22KB | 128ms |
-| Real Letter of Offer, 8 embedded fonts | 4.1MB | 20 pages, 320KB | 502ms |
-| Real Letter of Offer, fonts removed | 530KB | 20 pages, 340KB | **448ms** |
-
-The real template costs **~3.5x more per conversion** than the toy one, and that is
-dominated by laying out 20 pages of content rather than 1.
-
-**Embedded fonts are a minor factor.** Stripping all eight embedded fonts shrank the DOCX
-8x (4.1MB -> 530KB) but only improved per-conversion time by ~11% (502ms -> 448ms), and the
-output PDF got slightly *larger* (320KB -> 340KB) because LibreOffice substitutes and embeds
-its own subsets instead. Rendered output was byte-identical in content: 20 pages, 54,342
-characters either way. Do not strip fonts expecting a throughput win.
-
-#### Throughput vs replicas and concurrency
-
-Measured with the earlier font-embedded template (4.1MB) and `restart-after=0`. The absolute
-rates are superseded by the table above; the *shape* — replicas help sub-linearly, excess
-concurrency hurts — is what matters here.
-
-| Setup | concurrency | Throughput | p50 | p95 | Gotenberg CPU |
-|---|---|---|---|---|---|
-| 1 container, no nginx | 8 | 1.93 - 2.02/s | ~4000ms | — | — |
-| nginx + 2 replicas | 8 | 3.19/s | 2132ms | 3956ms | 216% |
-| nginx + 4 replicas | 8 | 3.05 - 5.29/s | ~2200ms | 5594ms | 329% |
-| nginx + 8 replicas | 8 | 3.87 - 5.75/s | 1577ms | 5511ms | 346% |
-| nginx + 8 replicas | 24 | 3.73/s | 4243ms | 15697ms | **914%** |
-| nginx + 8 replicas | 48 | **2.61/s** | 15791ms | 26309ms | **924%** |
-
-#### LibreOffice restarts help, they don't hurt
-
-`--libreoffice-restart-after` recycles LibreOffice every N conversions. Three runs of 100
-documents each, 4 replicas, `concurrency=8`, fonts-removed template:
-
-| Setting | Mean | Range |
-|---|---|---|
-| `10` (Gotenberg default) | **6.51/s** | 6.27 - 6.90 |
-| `0` (restarts disabled) | 5.29/s | 4.14 - 6.84 |
-
-Disabling restarts was *slower on average and far less consistent*. LibreOffice degrades as
-it accumulates state across conversions, and recycling it keeps throughput stable — which is
-presumably why Gotenberg defaults to 10. Keep the default; the restart cost is real but
-smaller than the degradation it prevents.
-
-#### Why it stops scaling
-
-- **The host CPU is the wall, not Gotenberg.** A conversion needs ~0.5s of largely
-  single-threaded LibreOffice work. On 10 CPUs the theoretical ceiling is ~20/s; the best
-  observed was 5.75/s, so real efficiency is only ~30%. The rest goes to LibreOffice
-  startup and IPC, handling a 4MB upload per request, and writing a 320KB PDF.
-- **Past concurrency 8, more load makes it slower.** Going 8 -> 24 -> 48 pushed CPU from
-  346% to ~920% of the 1000% available while throughput *fell* from 3.87 to 2.61/s and p50
-  went from 1.6s to 15.8s. That is thrashing: the replicas contend for cores and burn CPU
-  on context switching rather than conversions. Adding concurrency past this point only
-  inflates latency.
-- **Replicas help, but sub-linearly and only up to the core count.** 1 -> 8 replicas gave
-  roughly 2-3x, not 8x. Past about one replica per host CPU there is nothing left to win.
-- **Sync and webhook throughput are equivalent** (5.58 vs 5.66/s at 4 replicas, within
-  noise). Webhook's benefit is not speed — it is that the caller does not hold a thread and
-  socket open for the duration of each conversion.
-- **Discard the first run.** A cold LibreOffice measured 14.2/s where a warm one measured
-  23.4/s on identical settings. The harness has no warm-up phase; do a throwaway run first.
-- **Do not use `file` to count PDF pages.** It reports 181 pages for these outputs because
-  it greps the first `/Count` it finds, which belongs to an unrelated object. The real
-  count is 20. Use a PDF library, or count `/Type /Page` objects.
-
-#### Planning the 10,000-document run
-
-At the current sustained rate (~6.5/s: 4 replicas, `concurrency=8`, `restart-after=10`,
-fonts-removed template), 10,000 documents take **~26 minutes** and produce ~3.4GB of PDF
-(counted and discarded, not written).
-
-```bash
-curl -X POST "http://localhost:8080/api/loadtest/run?count=10000&mode=sync&concurrency=8"
-```
-
-Use `concurrency=8`; higher values measurably hurt on this hardware. To go faster, the lever
-is more CPU, not more replicas or more concurrency.
-
-### Gotenberg flags that matter under load
-
-Set in `docker-compose.loadtest.yml`; the defaults will distort results:
-
-| Flag | Default | Load test value | Why |
+| Flag | Default | Used | Why |
 |---|---|---|---|
 | `--api-timeout` | 30s | 300s | Queued conversions blow through 30s and report as failures rather than backpressure |
 | `--webhook-max-retry` | 4 | 1 | Retries would deliver the same PDF several times and inflate the count |
-| `--libreoffice-restart-after` | 10 | **10 (unchanged)** | Measured faster and more consistent than disabling it; see above |
+| `--libreoffice-restart-after` | 10 | 10 | Measured faster and more consistent than disabling |
 
-Overridable for experiments:
+### Gotchas
 
-```bash
-GOTENBERG_REPLICAS=8 \
-GOTENBERG_RESTART_AFTER=0 \
-GOTENBERG_LOG_LEVEL=info \
-GOTENBERG_URL=http://gotenberg:3000 \
-  docker compose -f docker-compose.loadtest.yml up --build
-```
-
-### Troubleshooting
-
-- **Webhook run completes with `no webhook callback within Ns` errors** — Gotenberg
-  cannot reach the callback URL. `loadtest.webhook.base-url` is resolved *inside the
-  Gotenberg container*: use `http://docx-service:8080` when the app runs in Compose, and
-  `http://host.docker.internal:8080` when it runs on the host.
-- **Latency rises but throughput is flat** — the backend is saturated. Raise replicas,
-  not concurrency.
-- **Many failures at high `count`** — check `ulimit -n`; the connection pool needs file
-  descriptors.
+- **Discard the first run.** Cold LibreOffice measured 14.2/s where warm measured 23.4/s on
+  identical settings. There is no warm-up phase.
+- **Do not use `file` to count PDF pages.** It reports 181 for these 20-page outputs because it
+  greps the first `/Count` it finds. Use a PDF library or count `/Type /Page` objects.
+- **Webhook run reports `no webhook callback within Ns`** — Gotenberg cannot reach the callback.
+  `loadtest.webhook.base-url` resolves *inside the Gotenberg container*: `http://docx-service:8080`
+  in Compose, `http://host.docker.internal:8080` when the app runs on the host.
+- **Many failures at high `count`** — check `ulimit -n`; the connection pool needs file descriptors.
 
 ## Creating a Template DOCX
 

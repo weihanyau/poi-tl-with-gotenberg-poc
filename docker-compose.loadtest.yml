@@ -1,14 +1,16 @@
 # Load-testing stack: N Gotenberg replicas behind an nginx round-robin proxy.
 #
-# Gotenberg exposes no --libreoffice-max-concurrency flag (unlike Chromium), but a
-# single container is NOT serialised: measured on a 10-CPU Docker VM with the
-# 100-document smoke template at concurrency=20, 1 replica gave 7.6 conversions/s and
-# 4 replicas gave 21.1/s. Scaling helps, but sub-linearly -- past roughly one replica
-# per 2 host CPUs the replicas just contend for the same cores. Measure on your own
-# host before assuming more replicas will help.
+# A single Gotenberg container converts one document at a time: at 1 replica it pins to
+# ~103% CPU, i.e. exactly one core. That is why there is no --libreoffice-max-concurrency
+# flag (Chromium has one, LibreOffice does not) and why replicas are the only way to
+# convert in parallel.
+#
+# Measured on a 10-CPU Docker VM: 1 replica 2.06/s, 2 -> 3.80/s, 4 -> 6.24/s,
+# 8 -> 7.70/s, 12 -> 6.96/s. Gains fall off after 4 and reverse after 8. Scale
+# concurrency alongside replicas, roughly 2x. Measure on your own host.
 #
 #   docker compose -f docker-compose.loadtest.yml up --build
-#   GOTENBERG_REPLICAS=8 docker compose -f docker-compose.loadtest.yml up --build
+#   GOTENBERG_REPLICAS=12 docker compose -f docker-compose.loadtest.yml up --build
 
 services:
   gotenberg:
@@ -32,8 +34,10 @@ services:
       # each replica served and verify the load is actually being distributed.
       - --log-level=${GOTENBERG_LOG_LEVEL:-error}
     # No host port binding: replicas cannot share one.
+    # 8 measured fastest on a 10-CPU host (7.70/s); 12 regressed. Roughly one replica per
+    # host CPU is the ceiling -- see the replica sweep in the README.
     deploy:
-      replicas: ${GOTENBERG_REPLICAS:-4}
+      replicas: ${GOTENBERG_REPLICAS:-8}
     restart: unless-stopped
 
   gotenberg-lb:
